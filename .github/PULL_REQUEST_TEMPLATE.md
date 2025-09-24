@@ -1,5 +1,5 @@
 <!-- HTML Comments can be left in place or removed. -->
-<!-- Please see our contributing guide at https://github.com/k3s-io/k3s/blob/master/CONTRIBUTING.md for guidance on opening pull requests -->
+<!-- Please see our contributing guide at https://github.com/k3s-io/k3s/blob/main/CONTRIBUTING.md for guidance on opening pull requests -->
 
 #### Proposed Changes ####
 
@@ -12,6 +12,11 @@
 #### Verification ####
 
 <!-- How can the changes be verified? Please provide whatever additional information necessary to help verify the proposed changes. -->
+
+#### Testing ####
+
+<!-- Is this change covered by testing? If not, consider adding a Unit or Integration test. -->
+<!-- See https://github.com/k3s-io/k3s/blob/main/tests/TESTING.md for more info -->
 
 #### Linked Issues ####
 

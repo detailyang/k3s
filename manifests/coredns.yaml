@@ -72,6 +72,7 @@ data:
         loop
         reload
         loadbalance
+        import /etc/coredns/custom/*.override
     }
     import /etc/coredns/custom/*.server
 ---
@@ -84,7 +85,7 @@ metadata:
     k8s-app: kube-dns
     kubernetes.io/name: "CoreDNS"
 spec:
-  #replicas: 1
+  revisionHistoryLimit: 0
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -105,11 +106,8 @@ spec:
         - key: "node-role.kubernetes.io/control-plane"
           operator: "Exists"
           effect: "NoSchedule"
-        - key: "node-role.kubernetes.io/master"
-          operator: "Exists"
-          effect: "NoSchedule"
       nodeSelector:
-        beta.kubernetes.io/os: linux
+        kubernetes.io/os: linux
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -117,9 +115,15 @@ spec:
           labelSelector:
             matchLabels:
               k8s-app: kube-dns
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              k8s-app: kube-dns
       containers:
       - name: coredns
-        image: %{SYSTEM_DEFAULT_REGISTRY}%rancher/mirrored-coredns-coredns:1.9.1
+        image: "%{SYSTEM_DEFAULT_REGISTRY}%rancher/mirrored-coredns-coredns:1.12.3"
         imagePullPolicy: IfNotPresent
         resources:
           limits:
@@ -204,6 +208,7 @@ spec:
   selector:
     k8s-app: kube-dns
   clusterIP: %{CLUSTER_DNS}%
+  clusterIPs: %{CLUSTER_DNS_LIST}%
   ports:
   - name: dns
     port: 53
@@ -214,3 +219,4 @@ spec:
   - name: metrics
     port: 9153
     protocol: TCP
+  ipFamilyPolicy: %{CLUSTER_DNS_IPFAMILYPOLICY}%

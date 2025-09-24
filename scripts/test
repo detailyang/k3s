@@ -2,9 +2,15 @@
 set -e -x
 cd $(dirname $0)/..
 
-. ./scripts/codespell.sh
 . ./scripts/version.sh
-. ./scripts/test-helpers
+. ./tests/docker/test-helpers
+
+# sysctl commands
+sysctl -w fs.inotify.max_queued_events=16384
+sysctl -w fs.inotify.max_user_instances=8192
+sysctl -w fs.inotify.max_user_watches=524288
+sysctl -w user.max_inotify_instances=8192
+sysctl -w user.max_inotify_watches=524288
 
 artifacts=$(pwd)/dist/artifacts
 mkdir -p $artifacts
@@ -13,48 +19,75 @@ mkdir -p $artifacts
 
 docker ps
 
+export K3S_IMAGE="rancher/k3s:${VERSION_TAG}${SUFFIX}"
+export VERSION_K8S # used by the sonobuoy tests subprocess
 # ---
+# Only run PR tests on arm arch, we use GitHub Actions for amd64 and arm64
+# Run all tests on tag events, as we want test failures to block the release
+if [ "$ARCH" == 'arm' ] ||  [ "$DRONE_BUILD_EVENT" = 'tag' ]; then
 
-. ./scripts/test-run-basics
-echo "Did test-run-basics $?"
+  go test ./tests/docker/basics/basics_test.go -k3sImage="$K3S_IMAGE" -ci
+  echo "Did go test basics $?"
 
-# Skipping compact tests for s390x since there is no previous s390x release
-if [ ${ARCH} != s390x ]; then
-  . ./scripts/test-run-compat
-  echo "Did test-run-compat $?"
+  # Extract v1.XX minor version for skew and upgrade tests
+  minor_version=$(echo $VERSION_K8S | cut -d '.' -f1,2)
+
+  go test ./tests/docker/cacerts/cacerts_test.go -k3sImage="$K3S_IMAGE" -ci
+  echo "Did go test cacerts $?"
+
+  go test ./tests/docker/skew/skew_test.go -k3sImage="$K3S_IMAGE" -channel="$minor_version" -ci
+  echo "Did go test skew $?"
+
+  go test ./tests/docker/bootstraptoken/bootstraptoken_test.go -k3sImage="$K3S_IMAGE" -ci
+  echo "Did go test bootstraptoken $?"
+
+  go test ./tests/docker/upgrade/upgrade_test.go -k3sImage="$K3S_IMAGE" -channel="$minor_version" -ci
+  echo "Did go test upgrade $?"
+  
+  go test ./tests/docker/lazypull/lazypull_test.go -k3sImage="$K3S_IMAGE" -ci
+  echo "Did go test lazypull $?"
+
 fi
 
-. ./scripts/test-run-etcd
-echo "Did test-run-etcd $?"
-
-. ./scripts/test-run-lazypull
-echo "Did test-run-lazypull $?"
 
 # ---
 
 [ "$ARCH" != 'amd64' ] && \
   early-exit "Skipping remaining tests, images not available for $ARCH."
 
-E2E_OUTPUT=$artifacts test-run-sonobuoy serial
-echo "Did test-run-sonobuoy serial $?"
-
 # ---
 
 if [ "$DRONE_BUILD_EVENT" = 'tag' ]; then
+  E2E_OUTPUT=$artifacts test-run-sonobuoy serial
+  echo "Did test-run-sonobuoy serial $?"
   E2E_OUTPUT=$artifacts test-run-sonobuoy parallel
   echo "Did test-run-sonobuoy parallel $?"
   early-exit 'Skipping remaining tests on tag.'
 fi
 # ---
 
-test-run-sonobuoy etcd serial
-echo "Did test-run-sonobuoy-etcd serial $?"
-test-run-sonobuoy mysql serial
-echo "Did test-run-sonobuoy-mysqk serial $?"
-test-run-sonobuoy postgres serial
-echo "Did test-run-sonobuoy-postgres serial $?"
+if [ "$DRONE_BUILD_EVENT" = 'cron' ]; then
+  LABEL="SERIAL SQLITE" run-go-test ./tests/docker/conformance/conformance_test.go -k3sImage="$K3S_IMAGE" -db sqlite -serial -ginkgo.v -ci
+  LABEL="SERIAL ETCD" run-go-test ./tests/docker/conformance/conformance_test.go -k3sImage="$K3S_IMAGE" -db etcd -serial -ginkgo.v -ci
+  LABEL="SERIAL MYSQL" run-go-test ./tests/docker/conformance/conformance_test.go -k3sImage="$K3S_IMAGE" -db mysql -serial -ginkgo.v -ci
+  LABEL="SERIAL POSTGRES" run-go-test ./tests/docker/conformance/conformance_test.go -k3sImage="$K3S_IMAGE" -db postgres -serial -ginkgo.v -ci
 
-# Wait until all serial tests have finished
+  # Wait until all serial tests have finished
+  delay=15
+  (
+  set +x
+  while [ $(count-running-tests) -ge 1 ]; do
+      sleep $delay
+  done
+  )
+
+  LABEL="PARALLEL SQLITE" run-go-test ./tests/docker/conformance/conformance_test.go -k3sImage="$K3S_IMAGE" -db sqlite -ginkgo.v -ci
+  LABEL="PARALLEL ETCD" run-go-test ./tests/docker/conformance/conformance_test.go -k3sImage="$K3S_IMAGE" -db etcd -ginkgo.v -ci
+  LABEL="PARALLEL MYSQL" run-go-test ./tests/docker/conformance/conformance_test.go -k3sImage="$K3S_IMAGE" -db mysql -ginkgo.v -ci
+  LABEL="PARALLEL POSTGRES" run-go-test ./tests/docker/conformance/conformance_test.go -k3sImage="$K3S_IMAGE" -db postgres -ginkgo.v -ci
+fi
+
+# Wait until all tests have finished
 delay=15
 (
 set +x
@@ -62,16 +95,5 @@ while [ $(count-running-tests) -ge 1 ]; do
     sleep $delay
 done
 )
-E2E_OUTPUT=$artifacts test-run-sonobuoy parallel
-echo "Did test-run-sonobuoy parallel $?"
-test-run-sonobuoy etcd parallel
-echo "Did test-run-sonobuoy-etcd parallel $?"
-test-run-sonobuoy mysql parallel
-echo "Did test-run-sonobuoy-mysql parallel $?"
-test-run-sonobuoy postgres parallel
-echo "Did test-run-sonobuoy-postgres parallel $?"
-
-
-
 
 exit 0

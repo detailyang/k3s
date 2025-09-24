@@ -1,11 +1,17 @@
 package crictl
 
 import (
-	"github.com/kubernetes-sigs/cri-tools/cmd/crictl"
-	"github.com/urfave/cli"
+	"os"
+	"runtime"
+
+	"github.com/urfave/cli/v2"
+	"sigs.k8s.io/cri-tools/cmd/crictl"
 )
 
 func Run(ctx *cli.Context) error {
+	if runtime.GOOS == "windows" {
+		os.Args = os.Args[1:]
+	}
 	crictl.Main()
 	return nil
 }

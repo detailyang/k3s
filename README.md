@@ -1,5 +1,14 @@
 K3s - Lightweight Kubernetes
 ===============================================
+[![FOSSA Status](https://app.fossa.com/api/projects/custom%2B25850%2Fgithub.com%2Fk3s-io%2Fk3s.svg?type=shield)](https://app.fossa.com/projects/custom%2B25850%2Fgithub.com%2Fk3s-io%2Fk3s?ref=badge_shield)
+[![Nightly CI](https://github.com/k3s-io/k3s/actions/workflows/nightly-install.yaml/badge.svg)](https://github.com/k3s-io/k3s/actions/workflows/nightly-install.yaml)
+[![Build Status](https://drone-publish.k3s.io/api/badges/k3s-io/k3s/status.svg)](https://drone-publish.k3s.io/k3s-io/k3s)
+[![Integration Test Coverage](https://github.com/k3s-io/k3s/actions/workflows/integration.yaml/badge.svg)](https://github.com/k3s-io/k3s/actions/workflows/integration.yaml)
+[![Unit Test Coverage](https://github.com/k3s-io/k3s/actions/workflows/unitcoverage.yaml/badge.svg)](https://github.com/k3s-io/k3s/actions/workflows/unitcoverage.yaml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/6835/badge)](https://www.bestpractices.dev/projects/6835)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/k3s-io/k3s/badge)](https://scorecard.dev/viewer/?uri=github.com/k3s-io/k3s)
+[![Releases](https://img.shields.io/github/downloads/k3s-io/k3s/total.svg)](https://github.com/k3s-io/k3s/tags?label=Downloads)
+[![CLOMonitor](https://img.shields.io/endpoint?url=https://clomonitor.io/api/projects/cncf/k3s/badge)](https://clomonitor.io/projects/cncf/k3s)
 
 Lightweight Kubernetes.  Production ready, easy to install, half the memory, all in a binary less than 100 MB.
 
@@ -19,7 +28,7 @@ What is this?
 K3s is a [fully conformant](https://github.com/cncf/k8s-conformance/pulls?q=is%3Apr+k3s) production-ready Kubernetes distribution with the following changes:
 
 1. It is packaged as a single binary.
-1. It adds support for sqlite3 as the default storage backend. Etcd3, MySQL, and Postgres are also supported.
+1. It adds support for sqlite3 as the default storage backend. Etcd3, MariaDB, MySQL, and Postgres are also supported.
 1. It wraps Kubernetes and other components in a single, simple launcher.
 1. It is secure by default with reasonable defaults for lightweight environments.
 1. It has minimal to no OS dependencies (just a sane kernel and cgroup mounts needed).
@@ -28,7 +37,7 @@ K3s is a [fully conformant](https://github.com/cncf/k8s-conformance/pulls?q=is%3
 K3s bundles the following technologies together into a single cohesive distribution:
 
 * [Containerd](https://containerd.io/) & [runc](https://github.com/opencontainers/runc)
-* [Flannel](https://github.com/coreos/flannel) for CNI
+* [Flannel](https://github.com/flannel-io/flannel) for CNI
 * [CoreDNS](https://coredns.io/)
 * [Metrics Server](https://github.com/kubernetes-sigs/metrics-server)
 * [Traefik](https://containo.us/traefik/) for ingress
@@ -46,14 +55,14 @@ Additionally, K3s simplifies Kubernetes operations by maintaining functionality 
 * Managing the TLS certificates of Kubernetes components
 * Managing the connection between worker and server nodes
 * Auto-deploying Kubernetes resources from local manifests in realtime as they are changed.
-* Managing an embedded etcd cluster (work in progress)
+* Managing an embedded etcd cluster
 
 What's with the name?
 --------------------
 
 We wanted an installation of Kubernetes that was half the size in terms of memory footprint. Kubernetes is a
 10 letter word stylized as k8s. So something half as big as Kubernetes would be a 5 letter word stylized as
-K3s. There is neither a long-form of K3s nor official pronunciation.
+K3s. A '3' is also an '8' cut in half vertically. There is neither a long-form of K3s nor official pronunciation.
 
 Is this a fork?
 ---------------
@@ -67,7 +76,7 @@ How is this lightweight or smaller than upstream Kubernetes?
 
 There are two major ways that K3s is lighter weight than upstream Kubernetes:
 1. The memory footprint to run it is smaller
-1. The binary, which contains all the non-containerized components needed to run a cluster, is smaller
+2. The binary, which contains all the non-containerized components needed to run a cluster, is smaller
 
 The memory footprint is reduced primarily by running many components inside of a single process. This eliminates significant overhead that would otherwise be duplicated for each component.
 
@@ -85,6 +94,36 @@ Both of these have out-of-tree alternatives in the form of [CSI](https://github.
 
 We remove these to achieve a smaller binary size. They can be removed while remaining conformant because neither affects core Kubernetes functionality. They are also dependent on third-party cloud or data center technologies/services, which may not be available in many K3s' use cases.
 
+Getting Started
+---
+- [Quick Install](https://docs.k3s.io/quick-start)
+- [Architecture](https://docs.k3s.io/architecture)
+- [FAQ](https://docs.k3s.io/faq)
+- [Contribute](CONTRIBUTING.md)
+
+Community
+---
+- ### Slack
+
+Join [Slack](https://slack.rancher.io/) to chat with K3s developers and other K3s users. Great place to learn and ask questions: [#k3s](https://rancher-users.slack.com/archives/CGGQEHPPW) and [#k3s-contributor](https://rancher-users.slack.com/archives/CGXR87T8B) and [#k3s](https://cloud-native.slack.com/archives/C0196ULKX8S) channel in [CNCF Slack](https://cloud-native.slack.com)
+
+- ### Getting involved
+[GitHub Issues](https://github.com/k3s-io/k3s/issues) - Submit your issues and feature requests via GitHub.
+
+- ### Community Meetings and Office hours
+The K3s developer community hangs out on Zoom to chat. Everybody is welcome.
+
+**Add the [Linux Foundation iCal](https://webcal.prod.itx.linuxfoundation.org/lfx/a092M00001IkYIjQAN) to your calendar**: 
+- AMS/EMEA TZ 10:00 am PST - every *second* Tuesday of the month
+- EMEA/APAC TimeZone friendly - every *third* Tuesday of the month
+
+**Meeting notes and agenda**: https://hackmd.io/@k3s/meet-notes/
+
+**Meeting recordings**: [K3s Channel](https://www.youtube.com/watch?v=HRuJROA6Z3k&list=PLlBG85HKlLE9KFDqJ_K6NOpup-zVw8ANl&pp=gAQB)
+
+You can check also the full details on the website: https://k3s.io/community
+
+
 What's next?
 ---
 
@@ -93,14 +132,14 @@ Check out our [roadmap](ROADMAP.md) to see what we have planned moving forward.
 Release cadence
 ---
 
-K3s maintains pace with upstream Kubernetes releases. Our goal is to release patch releases on the same day as upstream and minor releases within a few days.
+K3s maintains pace with upstream Kubernetes releases. Our goal is to release patch releases within one week, and new minors within 30 days.
 
-Our release versioning reflects the version of upstream Kubernetes that is being released. For example, the K3s release [v1.18.6+k3s1](https://github.com/k3s-io/k3s/releases/tag/v1.18.6%2Bk3s1) maps to the `v1.18.6` Kubernetes release. We add a postfix in the form of `+k3s<number>` to allow us to make additional releases using the same version of upstream Kubernetes while remaining [semver](https://semver.org/) compliant. For example, if we discovered a high severity bug in `v1.18.6+k3s1` and needed to release an immediate fix for it, we would release `v1.18.6+k3s2`.
+Our release versioning reflects the version of upstream Kubernetes that is being released. For example, the K3s release [v1.27.4+k3s1](https://github.com/k3s-io/k3s/releases/tag/v1.27.4%2Bk3s1) maps to the `v1.27.4` Kubernetes release. We add a postfix in the form of `+k3s<number>` to allow us to make additional releases using the same version of upstream Kubernetes while remaining [semver](https://semver.org/) compliant. For example, if we discovered a high severity bug in `v1.27.4+k3s1` and needed to release an immediate fix for it, we would release `v1.27.4+k3s2`.
 
 Documentation
 -------------
 
-Please see [the official docs site](https://rancher.com/docs/k3s/latest/en/) for complete documentation.
+Please see [the official docs site](https://docs.k3s.io) for complete documentation.
 
 Quick-Start - Install Script
 --------------
@@ -122,7 +161,7 @@ sudo kubectl get nodes
 
 `K3S_TOKEN` is created at `/var/lib/rancher/k3s/server/node-token` on your server.
 To install on worker nodes, pass `K3S_URL` along with
-`K3S_TOKEN` or `K3S_CLUSTER_SECRET` environment variables, for example:
+`K3S_TOKEN` environment variables, for example:
 
 ```bash
 curl -sfL https://get.k3s.io | K3S_URL=https://myserver:6443 K3S_TOKEN=XXX sh -
@@ -152,4 +191,5 @@ Please check out our [contributing guide](CONTRIBUTING.md) if you're interested 
 Security
 --------
 
-Security issues in K3s can be reported by sending an email to [security@k3s.io](mailto:security@k3s.io). Please do not file issues about security issues.
+Security issues in K3s can be reported by sending an email to [security@k3s.io](mailto:security@k3s.io).
+Please do not file issues about security issues.

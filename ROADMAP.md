@@ -1,19 +1,7 @@
 Roadmap
 ---
-This represents the larger, bigger impact features and enhancements we have planned for K3s. Features are planned, but do not represent a commitment to develop and can change at any time. There are many more tactical enhancements and fixes that can be found by reviewing our [GitHub milestones](https://github.com/k3s-io/k3s/milestones).
+The k3s project uses [GitHub Milestones](http://github.com/k3s-io/k3s/milestones) to track the progress of changes going into the project.
 
-Next
----
-- CLI support for etcd backup management
-- Multus CNI support
-- Experimental support for migration from SQLite to etcd
-- Embedded registry support
-- Windows OS Support
+The k3s release cycle moves in cadence with upstream Kubernetes, with an aim to have new minor releases out within 30 days of upstream .0 releases.  To follow incoming changes, watching the [Backlog](https://github.com/orgs/k3s-io/projects/5) and [Current Development](https://github.com/orgs/k3s-io/projects/6) GitHub Projects is the most up to date way to see what's coming in upcooming releases.
 
-Later
----
-- Align K3s with upstream Kubernetes by removing patches or upstreaming them
-- FIPS-140-2 Compliant binaries
-- Graduate encrypted networking support from experimental to GA
-- Graduate network policy support from experimental to GA
-
+The development of k3s itself happens in the `main` branch, which correlates to the most recent Kubernetes minor release.  These changes are then backported to the active release lines (at this time, `release-[N]`, `release-[N-1]`, and `release-[N-2]`)

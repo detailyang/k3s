@@ -33,8 +33,13 @@ func Configure(enableIPv6 bool, config *kubeproxyconfig.KubeProxyConntrackConfig
 	loadKernelModule("nf_conntrack")
 	loadKernelModule("br_netfilter")
 	loadKernelModule("iptable_nat")
+	loadKernelModule("iptable_filter")
+	loadKernelModule("nft-expr-counter")
+	loadKernelModule("nfnetlink-subsys-11")
+	loadKernelModule("nft-chain-2-nat")
 	if enableIPv6 {
 		loadKernelModule("ip6table_nat")
+		loadKernelModule("ip6table_filter")
 	}
 
 	// Kernel is inconsistent about how devconf is configured for

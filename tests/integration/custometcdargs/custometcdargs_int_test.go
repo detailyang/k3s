@@ -13,8 +13,9 @@ import (
 var customEtcdArgsServer *testutil.K3sServer
 var customEtcdArgsServerArgs = []string{
 	"--cluster-init",
-	"--etcd-arg quota-backend-bytes=858993459",
+	"--etcd-arg=quota-backend-bytes=858993459",
 }
+
 var testLock int
 
 var _ = BeforeSuite(func() {
@@ -27,7 +28,7 @@ var _ = BeforeSuite(func() {
 	}
 })
 
-var _ = Describe("custom etcd args", func() {
+var _ = Describe("custom etcd args", Ordered, func() {
 	BeforeEach(func() {
 		if testutil.IsExistingServer() && !testutil.ServerArgsPresent(customEtcdArgsServerArgs) {
 			Skip("Test needs k3s server with: " + strings.Join(customEtcdArgsServerArgs, " "))
@@ -52,8 +53,16 @@ var _ = Describe("custom etcd args", func() {
 	})
 })
 
+var failed bool
+var _ = AfterEach(func() {
+	failed = failed || CurrentSpecReport().Failed()
+})
+
 var _ = AfterSuite(func() {
 	if !testutil.IsExistingServer() {
+		if failed {
+			testutil.K3sSaveLog(customEtcdArgsServer, false)
+		}
 		Expect(testutil.K3sKillServer(customEtcdArgsServer)).To(Succeed())
 		Expect(testutil.K3sCleanup(testLock, "")).To(Succeed())
 	}

@@ -4,7 +4,6 @@
 package agent
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -13,6 +12,7 @@ import (
 )
 
 const (
+	criDockerdSock = "unix:///run/k3s/cri-dockerd/cri-dockerd.sock"
 	containerdSock = "unix:///run/k3s/containerd/containerd.sock"
 )
 
@@ -21,7 +21,12 @@ const (
 func setupCriCtlConfig(cfg cmds.Agent, nodeConfig *config.Node) error {
 	cre := nodeConfig.ContainerRuntimeEndpoint
 	if cre == "" {
-		cre = containerdSock
+		switch {
+		case cfg.Docker:
+			cre = criDockerdSock
+		default:
+			cre = containerdSock
+		}
 	}
 
 	agentConfDir := filepath.Join(cfg.DataDir, "agent", "etc")
@@ -31,6 +36,15 @@ func setupCriCtlConfig(cfg cmds.Agent, nodeConfig *config.Node) error {
 		}
 	}
 
+	// Send to node struct the value from cli/config default runtime
+	if cfg.DefaultRuntime != "" {
+		nodeConfig.DefaultRuntime = cfg.DefaultRuntime
+	}
+
 	crp := "runtime-endpoint: " + cre + "\n"
-	return ioutil.WriteFile(agentConfDir+"/crictl.yaml", []byte(crp), 0600)
+	ise := nodeConfig.ImageServiceEndpoint
+	if ise != "" && ise != cre {
+		crp += "image-endpoint: " + cre + "\n"
+	}
+	return os.WriteFile(agentConfDir+"/crictl.yaml", []byte(crp), 0600)
 }

@@ -7,35 +7,44 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/containerd/cgroups"
-	cgroupsv2 "github.com/containerd/cgroups/v2"
+	cgroups "github.com/containerd/cgroups/v3"
+	cgroupsv1 "github.com/containerd/cgroups/v3/cgroup1"
+	cgroupsv2 "github.com/containerd/cgroups/v3/cgroup2"
 	"github.com/k3s-io/k3s/pkg/version"
 	"github.com/sirupsen/logrus"
 )
 
 func Validate() error {
-	if cgroups.Mode() == cgroups.Unified {
+	switch cgroups.Mode() {
+	case cgroups.Unified:
 		return validateCgroupsV2()
+	case cgroups.Legacy, cgroups.Hybrid:
+		return validateCgroupsV1()
+	default:
+		return errors.New("unhandled cgroup mode")
 	}
-	return validateCgroupsV1()
 }
 
 func validateCgroupsV1() error {
-	cgroups, err := ioutil.ReadFile("/proc/self/cgroup")
+	controllers, err := cgroupsv1.Default()
 	if err != nil {
 		return err
 	}
+	m := make(map[string]struct{})
+	for _, controller := range controllers {
+		name := string(controller.Name())
+		m[name] = struct{}{}
+	}
 
-	if !strings.Contains(string(cgroups), "cpuset") {
+	if _, ok := m["cpuset"]; !ok {
 		logrus.Warn(`Failed to find cpuset cgroup, you may need to add "cgroup_enable=cpuset" to your linux cmdline (/boot/cmdline.txt on a Raspberry Pi)`)
 	}
 
-	if !strings.Contains(string(cgroups), "memory") {
+	if _, ok := m["memory"]; !ok {
 		msg := "ailed to find memory cgroup, you may need to add \"cgroup_memory=1 cgroup_enable=memory\" to your linux cmdline (/boot/cmdline.txt on a Raspberry Pi)"
 		logrus.Error("F" + msg)
 		return errors.New("f" + msg)
@@ -45,7 +54,7 @@ func validateCgroupsV1() error {
 }
 
 func validateCgroupsV2() error {
-	manager, err := cgroupsv2.LoadManager("/sys/fs/cgroup", "/")
+	manager, err := cgroupsv2.NewManager("/sys/fs/cgroup", "/", &cgroupsv2.Resources{})
 	if err != nil {
 		return err
 	}
@@ -72,7 +81,7 @@ func CheckCgroups() (kubeletRoot, runtimeRoot string, controllers map[string]boo
 	// For Unified (v2) cgroups we can directly check to see what controllers are mounted
 	// under the unified hierarchy.
 	if cgroupsModeV2 {
-		m, err := cgroupsv2.LoadManager("/sys/fs/cgroup", "/")
+		m, err := cgroupsv2.NewManager("/sys/fs/cgroup", "/", &cgroupsv2.Resources{})
 		if err != nil {
 			return
 		}
@@ -109,6 +118,9 @@ func CheckCgroups() (kubeletRoot, runtimeRoot string, controllers map[string]boo
 				// and thus need to set our kubelet root to something out of the context
 				// of `/user.slice` to ensure that `CPUAccounting` and `MemoryAccounting`
 				// are enabled, as they are generally disabled by default for `user.slice`
+				// Note that we are not setting the `runtimeRoot` as if we are running with
+				// `--docker`, we will inadvertently move the cgroup `dockerd` lives in
+				//  which is not ideal and causes dockerd to become unmanageable by systemd.
 				last := parts[len(parts)-1]
 				i := strings.LastIndex(last, ".scope")
 				if i > 0 {

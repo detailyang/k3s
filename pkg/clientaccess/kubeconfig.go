@@ -1,28 +1,28 @@
 package clientaccess
 
 import (
-	"io/ioutil"
+	"os"
 
-	"github.com/pkg/errors"
+	pkgerrors "github.com/pkg/errors"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 // WriteClientKubeConfig generates a kubeconfig at destFile that can be used to connect to a server at url with the given certs and keys
 func WriteClientKubeConfig(destFile, url, serverCAFile, clientCertFile, clientKeyFile string) error {
-	serverCA, err := ioutil.ReadFile(serverCAFile)
+	serverCA, err := os.ReadFile(serverCAFile)
 	if err != nil {
-		return errors.Wrapf(err, "failed to read %s", serverCAFile)
+		return pkgerrors.WithMessagef(err, "failed to read %s", serverCAFile)
 	}
 
-	clientCert, err := ioutil.ReadFile(clientCertFile)
+	clientCert, err := os.ReadFile(clientCertFile)
 	if err != nil {
-		return errors.Wrapf(err, "failed to read %s", clientCertFile)
+		return pkgerrors.WithMessagef(err, "failed to read %s", clientCertFile)
 	}
 
-	clientKey, err := ioutil.ReadFile(clientKeyFile)
+	clientKey, err := os.ReadFile(clientKeyFile)
 	if err != nil {
-		return errors.Wrapf(err, "failed to read %s", clientKeyFile)
+		return pkgerrors.WithMessagef(err, "failed to read %s", clientKeyFile)
 	}
 
 	config := clientcmdapi.NewConfig()

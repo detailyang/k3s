@@ -1,77 +1,101 @@
 package etcdsnapshot
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"slices"
+	"sort"
 	"text/tabwriter"
 	"time"
 
-	"github.com/erikdubbelboer/gspt"
+	k3s "github.com/k3s-io/api/k3s.cattle.io/v1"
 	"github.com/k3s-io/k3s/pkg/cli/cmds"
-	"github.com/k3s-io/k3s/pkg/cluster"
+	"github.com/k3s-io/k3s/pkg/clientaccess"
+	"github.com/k3s-io/k3s/pkg/cluster/managed"
 	"github.com/k3s-io/k3s/pkg/daemons/config"
 	"github.com/k3s-io/k3s/pkg/etcd"
+	"github.com/k3s-io/k3s/pkg/proctitle"
 	"github.com/k3s-io/k3s/pkg/server"
 	util2 "github.com/k3s-io/k3s/pkg/util"
-	"github.com/rancher/wrangler/pkg/signals"
-	"github.com/urfave/cli"
-	"gopkg.in/yaml.v2"
+	pkgerrors "github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
+	"github.com/urfave/cli/v2"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/cli-runtime/pkg/printers"
 )
+
+var timeout = 2 * time.Minute
 
 // commandSetup setups up common things needed
 // for each etcd command.
-func commandSetup(app *cli.Context, cfg *cmds.Server, sc *server.Config) error {
-	gspt.SetProcTitle(os.Args[0])
+func commandSetup(app *cli.Context, cfg *cmds.Server) (*etcd.SnapshotRequest, *clientaccess.Info, error) {
+	// hide process arguments from ps output, since they may contain
+	// database credentials or other secrets.
+	proctitle.SetProcTitle(os.Args[0] + " etcd-snapshot")
 
-	nodeName := app.String("node-name")
-	if nodeName == "" {
-		h, err := os.Hostname()
-		if err != nil {
-			return err
-		}
-		nodeName = h
+	sr := &etcd.SnapshotRequest{}
+	// Operation and name are set by the command handler.
+	// Compression, dir, and retention take the server defaults if not overridden on the CLI.
+	if app.IsSet("etcd-snapshot-compress") {
+		sr.Compress = &cfg.EtcdSnapshotCompress
+	}
+	if app.IsSet("etcd-snapshot-dir") {
+		sr.Dir = &cfg.EtcdSnapshotDir
+	}
+	if app.IsSet("etcd-snapshot-retention") {
+		sr.Retention = &cfg.EtcdSnapshotRetention
 	}
 
-	os.Setenv("NODE_NAME", nodeName)
+	if cfg.EtcdS3 {
+		sr.S3 = &config.EtcdS3{
+			AccessKey:     cfg.EtcdS3AccessKey,
+			Bucket:        cfg.EtcdS3BucketName,
+			BucketLookup:  cfg.EtcdS3BucketLookupType,
+			ConfigSecret:  cfg.EtcdS3ConfigSecret,
+			Endpoint:      cfg.EtcdS3Endpoint,
+			EndpointCA:    cfg.EtcdS3EndpointCA,
+			Folder:        cfg.EtcdS3Folder,
+			Insecure:      cfg.EtcdS3Insecure,
+			Proxy:         cfg.EtcdS3Proxy,
+			Region:        cfg.EtcdS3Region,
+			SecretKey:     cfg.EtcdS3SecretKey,
+			SkipSSLVerify: cfg.EtcdS3SkipSSLVerify,
+			Retention:     cfg.EtcdS3Retention,
+			Timeout:       metav1.Duration{Duration: cfg.EtcdS3Timeout},
+		}
+		// extend request timeout to allow the S3 operation to complete
+		timeout += cfg.EtcdS3Timeout
+	}
 
 	dataDir, err := server.ResolveDataDir(cfg.DataDir)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
-	sc.DisableAgent = true
-	sc.ControlConfig.DataDir = dataDir
-	sc.ControlConfig.EtcdSnapshotName = cfg.EtcdSnapshotName
-	sc.ControlConfig.EtcdSnapshotDir = cfg.EtcdSnapshotDir
-	sc.ControlConfig.EtcdSnapshotCompress = cfg.EtcdSnapshotCompress
-	sc.ControlConfig.EtcdListFormat = strings.ToLower(cfg.EtcdListFormat)
-	sc.ControlConfig.EtcdS3 = cfg.EtcdS3
-	sc.ControlConfig.EtcdS3Endpoint = cfg.EtcdS3Endpoint
-	sc.ControlConfig.EtcdS3EndpointCA = cfg.EtcdS3EndpointCA
-	sc.ControlConfig.EtcdS3SkipSSLVerify = cfg.EtcdS3SkipSSLVerify
-	sc.ControlConfig.EtcdS3AccessKey = cfg.EtcdS3AccessKey
-	sc.ControlConfig.EtcdS3SecretKey = cfg.EtcdS3SecretKey
-	sc.ControlConfig.EtcdS3BucketName = cfg.EtcdS3BucketName
-	sc.ControlConfig.EtcdS3Region = cfg.EtcdS3Region
-	sc.ControlConfig.EtcdS3Folder = cfg.EtcdS3Folder
-	sc.ControlConfig.EtcdS3Insecure = cfg.EtcdS3Insecure
-	sc.ControlConfig.EtcdS3Timeout = cfg.EtcdS3Timeout
-	sc.ControlConfig.Runtime = &config.ControlRuntime{}
-	sc.ControlConfig.Runtime.ETCDServerCA = filepath.Join(dataDir, "tls", "etcd", "server-ca.crt")
-	sc.ControlConfig.Runtime.ClientETCDCert = filepath.Join(dataDir, "tls", "etcd", "client.crt")
-	sc.ControlConfig.Runtime.ClientETCDKey = filepath.Join(dataDir, "tls", "etcd", "client.key")
-	sc.ControlConfig.Runtime.KubeConfigAdmin = filepath.Join(dataDir, "cred", "admin.kubeconfig")
-
-	return nil
+	if cfg.Token == "" {
+		fp := filepath.Join(dataDir, "token")
+		tokenByte, err := os.ReadFile(fp)
+		if err != nil {
+			return nil, nil, err
+		}
+		cfg.Token = string(bytes.TrimRight(tokenByte, "\n"))
+	}
+	info, err := clientaccess.ParseAndValidateToken(cmds.ServerConfig.ServerURL, cfg.Token, clientaccess.WithUser("server"))
+	return sr, info, err
 }
 
-// Run is an alias for Save, retained for compatibility reasons.
-func Run(app *cli.Context) error {
-	return Save(app)
+func wrapServerError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		// if the request timed out the server log likely won't contain anything useful,
+		// since the operation may have actualy succeeded despite the client timing out the request.
+		return err
+	}
+	return pkgerrors.WithMessage(err, "see server log for details")
 }
 
 // Save triggers an on-demand etcd snapshot operation
@@ -83,45 +107,40 @@ func Save(app *cli.Context) error {
 }
 
 func save(app *cli.Context, cfg *cmds.Server) error {
-	var serverConfig server.Config
-
-	if err := commandSetup(app, cfg, &serverConfig); err != nil {
-		return err
-	}
-
-	if len(app.Args()) > 0 {
+	if app.Args().Len() > 0 {
 		return util2.ErrCommandNoArgs
 	}
 
-	serverConfig.ControlConfig.EtcdSnapshotRetention = 0 // disable retention check
+	// Save always sets retention to 0 to disable automatic pruning.
+	// Prune can be run manually after save, if desired.
+	app.Set("etcd-snapshot-retention", "0")
 
-	ctx := signals.SetupSignalContext()
-	e := etcd.NewETCD()
-	if err := e.SetControlConfig(ctx, &serverConfig.ControlConfig); err != nil {
-		return err
-	}
-
-	initialized, err := e.IsInitialized(ctx, &serverConfig.ControlConfig)
+	sr, info, err := commandSetup(app, cfg)
 	if err != nil {
 		return err
 	}
-	if !initialized {
-		return fmt.Errorf("etcd database not found in %s", serverConfig.ControlConfig.DataDir)
-	}
 
-	cluster := cluster.New(&serverConfig.ControlConfig)
+	sr.Operation = etcd.SnapshotOperationSave
+	sr.Name = []string{cfg.EtcdSnapshotName}
 
-	if err := cluster.Bootstrap(ctx, true); err != nil {
-		return err
-	}
-
-	sc, err := server.NewContext(ctx, serverConfig.ControlConfig.Runtime.KubeConfigAdmin)
+	b, err := json.Marshal(sr)
 	if err != nil {
 		return err
 	}
-	serverConfig.ControlConfig.Runtime.Core = sc.Core
+	r, err := info.Post("/db/snapshot", b, clientaccess.WithTimeout(timeout))
+	if err != nil {
+		return wrapServerError(err)
+	}
+	resp := &managed.SnapshotResult{}
+	if err := json.Unmarshal(r, resp); err != nil {
+		return err
+	}
 
-	return cluster.Snapshot(ctx, &serverConfig.ControlConfig)
+	for _, name := range resp.Created {
+		logrus.Infof("Snapshot %s saved.", name)
+	}
+
+	return nil
 }
 
 func Delete(app *cli.Context) error {
@@ -132,30 +151,42 @@ func Delete(app *cli.Context) error {
 }
 
 func delete(app *cli.Context, cfg *cmds.Server) error {
-	var serverConfig server.Config
-
-	if err := commandSetup(app, cfg, &serverConfig); err != nil {
-		return err
-	}
-
 	snapshots := app.Args()
-	if len(snapshots) == 0 {
+	if snapshots.Len() == 0 {
 		return errors.New("no snapshots given for removal")
 	}
 
-	ctx := signals.SetupSignalContext()
-	e := etcd.NewETCD()
-	if err := e.SetControlConfig(ctx, &serverConfig.ControlConfig); err != nil {
-		return err
-	}
-
-	sc, err := server.NewContext(ctx, serverConfig.ControlConfig.Runtime.KubeConfigAdmin)
+	sr, info, err := commandSetup(app, cfg)
 	if err != nil {
 		return err
 	}
-	serverConfig.ControlConfig.Runtime.Core = sc.Core
 
-	return e.DeleteSnapshots(ctx, app.Args())
+	sr.Operation = etcd.SnapshotOperationDelete
+	sr.Name = snapshots.Slice()
+
+	b, err := json.Marshal(sr)
+	if err != nil {
+		return err
+	}
+	r, err := info.Post("/db/snapshot", b, clientaccess.WithTimeout(timeout))
+	if err != nil {
+		return wrapServerError(err)
+	}
+	resp := &managed.SnapshotResult{}
+	if err := json.Unmarshal(r, resp); err != nil {
+		return err
+	}
+
+	for _, name := range resp.Deleted {
+		logrus.Infof("Snapshot %s deleted.", name)
+	}
+	for _, name := range snapshots.Slice() {
+		if !slices.Contains(resp.Deleted, name) {
+			logrus.Warnf("Snapshot %s not found.", name)
+		}
+	}
+
+	return nil
 }
 
 func List(app *cli.Context) error {
@@ -165,7 +196,7 @@ func List(app *cli.Context) error {
 	return list(app, &cmds.ServerConfig)
 }
 
-var etcdListFormats = []string{"json", "yaml"}
+var etcdListFormats = []string{"json", "yaml", "table"}
 
 func validEtcdListFormat(format string) bool {
 	for _, supportedFormat := range etcdListFormats {
@@ -177,35 +208,48 @@ func validEtcdListFormat(format string) bool {
 }
 
 func list(app *cli.Context, cfg *cmds.Server) error {
-	var serverConfig server.Config
-
-	if err := commandSetup(app, cfg, &serverConfig); err != nil {
-		return err
-	}
-
-	ctx := signals.SetupSignalContext()
-	e := etcd.NewETCD()
-	if err := e.SetControlConfig(ctx, &serverConfig.ControlConfig); err != nil {
-		return err
-	}
-
-	sf, err := e.ListSnapshots(ctx)
-	if err != nil {
-		return err
-	}
-
 	if cfg.EtcdListFormat != "" && !validEtcdListFormat(cfg.EtcdListFormat) {
 		return errors.New("invalid output format: " + cfg.EtcdListFormat)
 	}
 
+	sr, info, err := commandSetup(app, cfg)
+	if err != nil {
+		return err
+	}
+
+	sr.Operation = etcd.SnapshotOperationList
+
+	b, err := json.Marshal(sr)
+	if err != nil {
+		return err
+	}
+	r, err := info.Post("/db/snapshot", b, clientaccess.WithTimeout(timeout))
+	if err != nil {
+		return wrapServerError(err)
+	}
+
+	sf := &k3s.ETCDSnapshotFileList{}
+	if err := json.Unmarshal(r, sf); err != nil {
+		return err
+	}
+
+	sort.Slice(sf.Items, func(i, j int) bool {
+		if sf.Items[i].Status.CreationTime.Equal(sf.Items[j].Status.CreationTime) {
+			return sf.Items[i].Spec.SnapshotName < sf.Items[j].Spec.SnapshotName
+		}
+		return sf.Items[i].Status.CreationTime.Before(sf.Items[j].Status.CreationTime)
+	})
+
 	switch cfg.EtcdListFormat {
 	case "json":
-		if err := json.NewEncoder(os.Stdout).Encode(sf); err != nil {
+		json := printers.JSONPrinter{}
+		if err := json.PrintObj(sf, os.Stdout); err != nil {
 			return err
 		}
 		return nil
 	case "yaml":
-		if err := yaml.NewEncoder(os.Stdout).Encode(sf); err != nil {
+		yaml := printers.YAMLPrinter{}
+		if err := yaml.PrintObj(sf, os.Stdout); err != nil {
 			return err
 		}
 		return nil
@@ -213,20 +257,9 @@ func list(app *cli.Context, cfg *cmds.Server) error {
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
 		defer w.Flush()
 
-		if cfg.EtcdS3 {
-			fmt.Fprint(w, "Name\tSize\tCreated\n")
-			for _, s := range sf {
-				if s.NodeName == "s3" {
-					fmt.Fprintf(w, "%s\t%d\t%s\n", s.Name, s.Size, s.CreatedAt.Format(time.RFC3339))
-				}
-			}
-		} else {
-			fmt.Fprint(w, "Name\tLocation\tSize\tCreated\n")
-			for _, s := range sf {
-				if s.NodeName != "s3" {
-					fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", s.Name, s.Location, s.Size, s.CreatedAt.Format(time.RFC3339))
-				}
-			}
+		fmt.Fprint(w, "Name\tLocation\tSize\tCreated\n")
+		for _, esf := range sf.Items {
+			fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", esf.Spec.SnapshotName, esf.Spec.Location, esf.Status.Size.Value(), esf.Status.CreationTime.Format(time.RFC3339))
 		}
 	}
 
@@ -241,25 +274,30 @@ func Prune(app *cli.Context) error {
 }
 
 func prune(app *cli.Context, cfg *cmds.Server) error {
-	var serverConfig server.Config
-
-	if err := commandSetup(app, cfg, &serverConfig); err != nil {
-		return err
-	}
-
-	serverConfig.ControlConfig.EtcdSnapshotRetention = cfg.EtcdSnapshotRetention
-
-	ctx := signals.SetupSignalContext()
-	e := etcd.NewETCD()
-	if err := e.SetControlConfig(ctx, &serverConfig.ControlConfig); err != nil {
-		return err
-	}
-
-	sc, err := server.NewContext(ctx, serverConfig.ControlConfig.Runtime.KubeConfigAdmin)
+	sr, info, err := commandSetup(app, cfg)
 	if err != nil {
 		return err
 	}
-	serverConfig.ControlConfig.Runtime.Core = sc.Core
 
-	return e.PruneSnapshots(ctx)
+	sr.Operation = etcd.SnapshotOperationPrune
+	sr.Name = []string{cfg.EtcdSnapshotName}
+
+	b, err := json.Marshal(sr)
+	if err != nil {
+		return err
+	}
+	r, err := info.Post("/db/snapshot", b, clientaccess.WithTimeout(timeout))
+	if err != nil {
+		return wrapServerError(err)
+	}
+	resp := &managed.SnapshotResult{}
+	if err := json.Unmarshal(r, resp); err != nil {
+		return err
+	}
+
+	for _, name := range resp.Deleted {
+		logrus.Infof("Snapshot %s deleted.", name)
+	}
+
+	return nil
 }

@@ -8,7 +8,7 @@ set -e
 #
 # Example:
 #   Installing a server without traefik:
-#     curl ... | INSTALL_K3S_EXEC="--no-deploy=traefik" sh -
+#     curl ... | INSTALL_K3S_EXEC="--disable=traefik" sh -
 #   Installing an agent to point at a server:
 #     curl ... | K3S_TOKEN=xxx K3S_URL=https://server-url:6443 sh -
 #
@@ -17,7 +17,7 @@ set -e
 #     Environment variables which begin with K3S_ will be preserved for the
 #     systemd service to use. Setting K3S_URL without explicitly setting
 #     a systemd exec command will default the command to "agent", and we
-#     enforce that K3S_TOKEN or K3S_CLUSTER_SECRET is also set.
+#     enforce that K3S_TOKEN is also set.
 #
 #   - INSTALL_K3S_SKIP_DOWNLOAD
 #     If set to true will not download k3s hash or binary.
@@ -66,11 +66,11 @@ set -e
 #     of EXEC and script args ($@).
 #
 #     The following commands result in the same behavior:
-#       curl ... | INSTALL_K3S_EXEC="--no-deploy=traefik" sh -s -
-#       curl ... | INSTALL_K3S_EXEC="server --no-deploy=traefik" sh -s -
-#       curl ... | INSTALL_K3S_EXEC="server" sh -s - --no-deploy=traefik
-#       curl ... | sh -s - server --no-deploy=traefik
-#       curl ... | sh -s - --no-deploy=traefik
+#       curl ... | INSTALL_K3S_EXEC="--disable=traefik" sh -s -
+#       curl ... | INSTALL_K3S_EXEC="server --disable=traefik" sh -s -
+#       curl ... | INSTALL_K3S_EXEC="server" sh -s - --disable=traefik
+#       curl ... | sh -s - server --disable=traefik
+#       curl ... | sh -s - --disable=traefik
 #
 #   - INSTALL_K3S_NAME
 #     Name of systemd service to create, will default from the k3s exec command
@@ -94,7 +94,7 @@ if [ "$INSTALL_K3S_DEBUG" = "true" ]; then
 fi
 
 GITHUB_URL=https://github.com/k3s-io/k3s/releases
-STORAGE_URL=https://storage.googleapis.com/k3s-ci-builds
+STORAGE_URL=https://k3s-ci-builds.s3.amazonaws.com
 DOWNLOADER=
 
 # --- helper functions for logs ---
@@ -166,8 +166,8 @@ setup_env() {
             if [ -z "${K3S_URL}" ]; then
                 CMD_K3S=server
             else
-                if [ -z "${K3S_TOKEN}" ] && [ -z "${K3S_CLUSTER_SECRET}" ]; then
-                    fatal "Defaulted k3s exec command to 'agent' because K3S_URL is defined, but K3S_TOKEN or K3S_CLUSTER_SECRET is not defined."
+                if [ -z "${K3S_TOKEN}" ]; then
+                    fatal "Defaulted k3s exec command to 'agent' because K3S_URL is defined, but K3S_TOKEN is not defined."
                 fi
                 CMD_K3S=agent
             fi
@@ -543,6 +543,27 @@ killtree() {
     ) 2>/dev/null
 }
 
+remove_interfaces() {
+    # Delete network interface(s) that match 'master cni0'
+    ip link show 2>/dev/null | grep 'master cni0' | while read ignore iface ignore; do
+        iface=${iface%%@*}
+        [ -z "$iface" ] || ip link delete $iface
+    done
+
+    # Delete cni related interfaces
+    ip link delete cni0
+    ip link delete flannel.1
+    ip link delete flannel-v6.1
+    ip link delete kube-ipvs0
+    ip link delete flannel-wg
+    ip link delete flannel-wg-v6
+
+    # Remove advertised routes in tailscale
+    if [[ -n $(command -v tailscale) ]]; then
+        tailscale set --advertise-routes=
+    fi
+}
+
 getshims() {
     ps -e -o pid= -o args= | sed -e 's/^ *//; s/\s\s*/\t/;' | grep -w 'k3s/data/[^/]*/bin/containerd-shim' | cut -f1
 }
@@ -558,17 +579,11 @@ do_unmount '/var/lib/rancher/k3s'
 do_unmount '/var/lib/kubelet/pods'
 do_unmount '/run/netns/cni-'
 
-# Delete network interface(s) that match 'master cni0'
-ip link show 2>/dev/null | grep 'master cni0' | while read ignore iface ignore; do
-    iface=${iface%%@*}
-    [ -z "$iface" ] || ip link delete $iface
-done
-ip link delete cni0
-ip link delete flannel.1
-ip link delete flannel-v6.1
+remove_interfaces
+
 rm -rf /var/lib/cni/
-iptables-save | grep -v KUBE- | grep -v CNI- | grep -v flannel | iptables-restore
-ip6tables-save | grep -v KUBE- | grep -v CNI- | grep -v flannel | ip6tables-restore
+iptables-save | grep -v KUBE- | grep -v CNI- | grep -iv flannel | iptables-restore
+ip6tables-save | grep -v KUBE- | grep -v CNI- | grep -iv flannel | ip6tables-restore
 EOF
     $SUDO chmod 755 ${KILLALL_K3S_SH}
     $SUDO chown root:root ${KILLALL_K3S_SH}
@@ -675,7 +690,7 @@ TasksMax=infinity
 TimeoutStartSec=0
 Restart=always
 RestartSec=5s
-ExecStartPre=/bin/sh -xc '! /usr/bin/systemctl is-enabled --quiet nm-cloud-setup.service'
+ExecStartPre=/bin/sh -xc '! /usr/bin/systemctl is-enabled --quiet nm-cloud-setup.service 2>/dev/null'
 ExecStartPre=-/sbin/modprobe br_netfilter
 ExecStartPre=-/sbin/modprobe overlay
 ExecStart=${BIN_DIR}/k3s ${CMD_K3S} \$${CMD_K3S_ARGS_VAR}

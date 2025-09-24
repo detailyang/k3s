@@ -4,7 +4,8 @@
 package rootless
 
 import (
-	"io/ioutil"
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -12,13 +13,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/opencontainers/runc/libcontainer/cgroups"
-	"github.com/pkg/errors"
+	"github.com/opencontainers/cgroups"
+	pkgerrors "github.com/pkg/errors"
 	"github.com/rootless-containers/rootlesskit/pkg/child"
 	"github.com/rootless-containers/rootlesskit/pkg/copyup/tmpfssymlink"
 	"github.com/rootless-containers/rootlesskit/pkg/network/slirp4netns"
 	"github.com/rootless-containers/rootlesskit/pkg/parent"
-	portbuiltin "github.com/rootless-containers/rootlesskit/pkg/port/builtin"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
@@ -28,9 +28,16 @@ var (
 	childEnv           = "_K3S_ROOTLESS_SOCK"
 	evacuateCgroup2Env = "_K3S_ROOTLESS_EVACUATE_CGROUP2" // boolean
 	Sock               = ""
+
+	mtuEnv             = "K3S_ROOTLESS_MTU"
+	cidrEnv            = "K3S_ROOTLESS_CIDR"
+	enableIPv6Env      = "K3S_ROOTLESS_ENABLE_IPV6"
+	portDriverEnv      = "K3S_ROOTLESS_PORT_DRIVER"
+	disableLoopbackEnv = "K3S_ROOTLESS_DISABLE_HOST_LOOPBACK"
+	copyUpDirsEnv      = "K3S_ROOTLESS_COPYUPDIRS"
 )
 
-func Rootless(stateDir string) error {
+func Rootless(stateDir string, enableIPv6 bool) error {
 	defer func() {
 		os.Unsetenv(pipeFD)
 		os.Unsetenv(childEnv)
@@ -38,10 +45,12 @@ func Rootless(stateDir string) error {
 
 	hasFD := os.Getenv(pipeFD) != ""
 	hasChildEnv := os.Getenv(childEnv) != ""
+	rootlessDir := filepath.Join(stateDir, "rootless")
+	driver := getDriver(strings.ToLower(os.Getenv(portDriverEnv)))
 
 	if hasFD {
 		logrus.Debug("Running rootless child")
-		childOpt, err := createChildOpt()
+		childOpt, err := createChildOpt(driver)
 		if err != nil {
 			logrus.Fatal(err)
 		}
@@ -60,7 +69,7 @@ func Rootless(stateDir string) error {
 	if err := validateSysctl(); err != nil {
 		logrus.Fatal(err)
 	}
-	parentOpt, err := createParentOpt(filepath.Join(stateDir, "rootless"))
+	parentOpt, err := createParentOpt(driver, rootlessDir, enableIPv6)
 	if err != nil {
 		logrus.Fatal(err)
 	}
@@ -90,7 +99,7 @@ func validateSysctl() error {
 	for key, expectedValue := range expected {
 		if actualValue, err := readSysctl(key); err == nil {
 			if expectedValue != actualValue {
-				return errors.Errorf("expected sysctl value %q to be %q, got %q; try adding \"%s=%s\" to /etc/sysctl.conf and running `sudo sysctl --system`",
+				return fmt.Errorf("expected sysctl value %q to be %q, got %q; try adding \"%s=%s\" to /etc/sysctl.conf and running `sudo sysctl --system`",
 					key, expectedValue, actualValue, key, expectedValue)
 			}
 		}
@@ -100,7 +109,7 @@ func validateSysctl() error {
 
 func readSysctl(key string) (string, error) {
 	p := "/proc/sys/" + strings.ReplaceAll(key, ".", "/")
-	b, err := ioutil.ReadFile(p)
+	b, err := os.ReadFile(p)
 	if err != nil {
 		return "", err
 	}
@@ -116,20 +125,17 @@ func parseCIDR(s string) (*net.IPNet, error) {
 		return nil, err
 	}
 	if !ip.Equal(ipnet.IP) {
-		return nil, errors.Errorf("cidr must be like 10.0.2.0/24, not like 10.0.2.100/24")
+		return nil, errors.New("host identifier bits must not be set in CIDR prefix")
 	}
 	return ipnet, nil
 }
 
-func createParentOpt(stateDir string) (*parent.Opt, error) {
+func createParentOpt(driver portDriver, stateDir string, enableIPv6 bool) (*parent.Opt, error) {
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
-		return nil, errors.Wrapf(err, "failed to mkdir %s", stateDir)
+		return nil, pkgerrors.WithMessagef(err, "failed to mkdir %s", stateDir)
 	}
 
-	stateDir, err := ioutil.TempDir("", "rootless")
-	if err != nil {
-		return nil, err
-	}
+	driver.SetStateDir(stateDir)
 
 	opt := &parent.Opt{
 		StateDir:       stateDir,
@@ -144,33 +150,61 @@ func createParentOpt(stateDir string) (*parent.Opt, error) {
 		return nil, err
 	}
 	if selfCgroup2 := selfCgroupMap[""]; selfCgroup2 == "" {
-		logrus.Warnf("enabling cgroup2 is highly recommended, see https://rootlesscontaine.rs/getting-started/common/cgroup2/")
+		logrus.Warnf("Enabling cgroup2 is highly recommended, see https://rootlesscontaine.rs/getting-started/common/cgroup2/")
 	} else {
 		selfCgroup2Dir := filepath.Join("/sys/fs/cgroup", selfCgroup2)
 		if unix.Access(selfCgroup2Dir, unix.W_OK) == nil {
 			opt.EvacuateCgroup2 = "k3s_evac"
 		} else {
-			logrus.Warn("cannot set cgroup2 evacuation, make sure to run k3s as a systemd unit")
+			logrus.Warn("Cannot set cgroup2 evacuation, make sure to run k3s as a systemd unit")
 		}
 	}
 
 	mtu := 0
-	ipnet, err := parseCIDR("10.41.0.0/16")
+	if val := os.Getenv(mtuEnv); val != "" {
+		if v, err := strconv.ParseInt(val, 10, 0); err != nil {
+			logrus.Warn("Failed to parse rootless mtu value; using default")
+		} else {
+			mtu = int(v)
+		}
+	}
+
+	disableHostLoopback := true
+	if val := os.Getenv(disableLoopbackEnv); val != "" {
+		if v, err := strconv.ParseBool(val); err != nil {
+			logrus.Warn("Failed to parse rootless disable-host-loopback value; using default")
+		} else {
+			disableHostLoopback = v
+		}
+	}
+
+	if val := os.Getenv(enableIPv6Env); val != "" {
+		if v, err := strconv.ParseBool(val); err != nil {
+			logrus.Warn("Failed to parse rootless enable-ipv6 value; using default")
+		} else {
+			enableIPv6 = v
+		}
+	}
+
+	cidr := "10.41.0.0/16"
+	if val := os.Getenv(cidrEnv); val != "" {
+		cidr = val
+	}
+
+	ipnet, err := parseCIDR(cidr)
 	if err != nil {
 		return nil, err
 	}
-	disableHostLoopback := true
 	binary := "slirp4netns"
 	if _, err := exec.LookPath(binary); err != nil {
 		return nil, err
 	}
-	debugWriter := &logrusDebugWriter{}
-	opt.NetworkDriver, err = slirp4netns.NewParentDriver(debugWriter, binary, mtu, ipnet, "tap0", disableHostLoopback, "", false, false, false)
+	opt.NetworkDriver, err = slirp4netns.NewParentDriver(driver.LogWriter(), binary, mtu, ipnet, "tap0", disableHostLoopback, driver.APISocketPath(), false, false, enableIPv6)
 	if err != nil {
 		return nil, err
 	}
 
-	opt.PortDriver, err = portbuiltin.NewParentDriver(debugWriter, stateDir)
+	opt.PortDriver, err = driver.NewParentDriver()
 	if err != nil {
 		return nil, err
 	}
@@ -180,22 +214,16 @@ func createParentOpt(stateDir string) (*parent.Opt, error) {
 	return opt, nil
 }
 
-type logrusDebugWriter struct {
-}
-
-func (w *logrusDebugWriter) Write(p []byte) (int, error) {
-	s := strings.TrimSuffix(string(p), "\n")
-	logrus.Debug(s)
-	return len(p), nil
-}
-
-func createChildOpt() (*child.Opt, error) {
+func createChildOpt(driver portDriver) (*child.Opt, error) {
 	opt := &child.Opt{}
 	opt.TargetCmd = os.Args
 	opt.PipeFDEnvKey = pipeFD
 	opt.NetworkDriver = slirp4netns.NewChildDriver()
-	opt.PortDriver = portbuiltin.NewChildDriver(&logrusDebugWriter{})
+	opt.PortDriver = driver.NewChildDriver()
 	opt.CopyUpDirs = []string{"/etc", "/var/run", "/run", "/var/lib"}
+	if copyUpDirs := os.Getenv(copyUpDirsEnv); copyUpDirs != "" {
+		opt.CopyUpDirs = append(opt.CopyUpDirs, strings.Split(copyUpDirs, ",")...)
+	}
 	opt.CopyUpDriver = tmpfssymlink.NewChildDriver()
 	opt.MountProcfs = true
 	opt.Reaper = true

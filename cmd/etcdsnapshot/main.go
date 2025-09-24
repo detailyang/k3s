@@ -9,18 +9,17 @@ import (
 	"github.com/k3s-io/k3s/pkg/cli/etcdsnapshot"
 	"github.com/k3s-io/k3s/pkg/configfilearg"
 	"github.com/sirupsen/logrus"
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v2"
 )
 
 func main() {
 	app := cmds.NewApp()
-	app.Commands = []cli.Command{
-		cmds.NewEtcdSnapshotCommand(etcdsnapshot.Save,
-			cmds.NewEtcdSnapshotSubcommands(
-				etcdsnapshot.Delete,
-				etcdsnapshot.List,
-				etcdsnapshot.Prune,
-				etcdsnapshot.Save),
+	app.Commands = []*cli.Command{
+		cmds.NewEtcdSnapshotCommands(
+			etcdsnapshot.Delete,
+			etcdsnapshot.List,
+			etcdsnapshot.Prune,
+			etcdsnapshot.Save,
 		),
 	}
 
